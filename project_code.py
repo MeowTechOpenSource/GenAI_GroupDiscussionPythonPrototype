@@ -1,8 +1,7 @@
-from io import BytesIO
+
 import requests
 import json
 import pyttsx3
-from gtts import gTTS
 import tkinter as tk
 from tkinter import messagebox
 from tkinter import filedialog
@@ -11,12 +10,14 @@ import whisper
 import sounddevice as sd
 import numpy as np
 import wave
+import time
+import threading
 
 engine = pyttsx3.init()
 mixer.init()
 
 # Initialize Whisper model
-model = whisper.load_model("small")  # Replace with your Whisper model size
+model = whisper.load_model("small", device="cuda")  # Replace with your Whisper model size
 
 # Function to record audio
 def record_audio(filename, duration=10, samplerate=16000):
@@ -33,6 +34,7 @@ def record_audio(filename, duration=10, samplerate=16000):
 
 # Function to transcribe audio using Whisper
 def transcribe_audio(filename):
+    time.sleep(2)
     print("Transcribing audio...")
     result = model.transcribe(filename)
     print("Transcription completed.")
@@ -40,12 +42,12 @@ def transcribe_audio(filename):
 
 # Function to call OpenAI API
 def get_response(messages):
-    url = "http://192.168.0.175:1234/v1/chat/completions"
+    url = "http://localhost:1234/v1/chat/completions"
     headers = {
         "Content-Type": "application/json"
     }
     data = {
-        "model": "llama-3.3-70b-instruct",
+        "model": "llama-3.2-3b-instruct",
         "messages": messages,
         "response_format": {
             "type": "json_schema",
@@ -113,14 +115,27 @@ end_prompt = """
    - Speak within the **300 word limit**.  
 
 4. **Discussion Flow:**  
-   - Respond to questions **one by one** in separate replies (IMPORTANT!!!!).  
-   - Do not answer all questions at once.  
+   
    - If you are unsure, you may ask follow-up questions (e.g., "What do you think?") or agree with others (e.g., "I agree.").  
 
 5. **General Rules:**  
    - Always include both the `thoughts` and `response` fields in your reply.  
    - Weak students usually use I agree with you or what do you think without elaboration.
 
+6. **REMINDER**
+   - STAY IN CHARACTER!!!!!!!
+   - Please remind yourself of your character and thought process.
+   - You are a candidate, not an AI Language Model.
+
+"""
+"""
+### DSE Mode Only
+4.
+
+- Respond to questions **one by one** in separate replies (IMPORTANT!!!!).  
+   - Do not answer all questions at once.  
+   
+   
 6. **Marking Scheme**
 Part III: Vocabulary & Language Patterns
 7: Impressive range of vocabulary; highly accurate language patterns; skilled rephrasing.
@@ -247,66 +262,92 @@ real_person_name = "Real Person"
 messages = []
 messages.append({})
 names = ["A", "C", "D"]
-
-# GUI for User Interaction
+  # GUI for User Interaction
 def gui_app():
-    def start_recording():
-        filename = "user_input.wav"
-        record_audio(filename, duration=10)
-        transcription = transcribe_audio(filename)
-        user_input_var.set(transcription)
+      recording = False
+      audio_stream = None
+    
+      def start_recording():
+          nonlocal recording, audio_stream
+          if not recording:
+              recording = True
+              filename = "user_input.wav"
+              audio_stream = threading.Thread(target=lambda: record_audio(filename))
+              audio_stream.start()
 
-    def submit_response():
-        user_input = user_input_var.get()
-        if not user_input.strip():
-            messagebox.showwarning("Input Error", "Please record and provide your response before submitting.")
-            return
-        messages.append({"role": "user", "content": f"Candidate B: {user_input}"})
-        # Process the response with the AI
-        process_discussion()
+      def stop_recording():
+          nonlocal recording, audio_stream
+          if recording:
+              recording = False
+              if audio_stream:
+                  audio_stream.join()
+                  transcription = transcribe_audio("user_input.wav")
+                  user_input_var.set(transcription)
 
-    def process_discussion():
-        global msgs
-        can = 0
-        for persona in personas:
-            pre_prompt = f"""You are an AI persona participating in the **HKDSE English Oral Examination**, which is for Hong Kong Secondary Students, specifically **Paper 4**, the group discussion part. Your role is **Candidate {names[can]}**. The exam format includes three rounds where each candidate has around 300 word to speak, although timing may vary depending on the situation. The past chat history provided and you could quote, elaborate on both your (Candidate {names[can]}) responses or others."""
-            messages[0] = {"role": "system", "content": f"{pre_prompt}\n{start_prompt}\n{persona}\n{end_prompt}\n PLEASE STAY IN CHARACTER AND KEEP ELABORATION WITHIN THE PROVIDED QUESTION. YOU MUST MOVE ON TO THE NEXT QUESTION PROVIDED AFTER TWO ROUNDS AT MOST. THINK STEP BY STEP (in Chinese or English).\n Remind yourself to keep in your character."}
-            messages.append({"role": "system", "content": "Stay in character. Please answer ONE question in each response (and do not invent new questions)"})
-            #prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages])
-            #print(prompt)
-            response = get_response(messages)
-            persona_response = json.loads(response["choices"][0]["message"]["content"])["response"]
-            msgs += f"Candidate {names[can]}: {persona_response}\n"
-            print(f"Candidate {names[can]}: {persona_response}")
-            can += 1
-        msgs += "---End Of Round---\n"
-        user_input_var.set("")
+      def submit_response():
+          user_input = user_input_var.get()
+          if not user_input.strip():
+              messagebox.showwarning("Input Error", "Please record and provide your response before submitting.")
+              return
+          messages.append({"role": "user", "content": f"<Candidate B> {user_input} </Candidate B>"})
+          # Disable buttons before processing
+          record_button["state"] = "disabled"
+          stop_button["state"] = "disabled"
+          submit_button["state"] = "disabled"
+          # Process the response with the AI in a separate thread
+          threading.Thread(target=process_discussion).start()
 
-    # GUI Setup
-    root = tk.Tk()
-    root.title("HKDSE Group Discussion Simulation")
+      def process_discussion():
+          global msgs
+          can = 0
+          for persona in personas:
+              pre_prompt = f"""You are an AI persona participating in a group discussion . Your role is **Candidate {names[can]}**.  The past chat history provided and you could quote, elaborate on both your (Candidate {names[can]}) responses or others."""
+              messages[0] = {"role": "system", "content": f"SYSTEM PROMPT: {pre_prompt}\n{start_prompt}\n{persona}\n{end_prompt}\n PLEASE STAY IN CHARACTER AND KEEP ELABORATION WITHIN THE PROVIDED QUESTION. YOU MUST MOVE ON TO THE NEXT QUESTION PROVIDED AFTER TWO ROUNDS AT MOST. THINK STEP BY STEP (in Chinese or English).\n Remind yourself to keep in your character."}
+              messages.append({"role": "system", "content": "Stay in character. Please answer ONE question in each response (and do not invent new questions)"})
+              response = get_response(messages)
+              persona_response = json.loads(response["choices"][0]["message"]["content"])["response"]
+              msgs += f"Candidate {names[can]}: {persona_response}\n"
+              messages.append({"role": "user", "content": f"<Candidate {names[can]}> {persona_response} </Candidate {names[can]}>"})
+              engine.say(f"Candidate {names[can]}: {persona_response}")
+              engine.runAndWait()
+              can += 1
+          msgs += "---End Of Round---\n"
+          user_input_var.set("")
+          # Re-enable buttons after round ends
+          record_button["state"] = "normal"
+          stop_button["state"] = "normal"
+          submit_button["state"] = "normal"
 
-    tk.Label(root, text="Your Response (Record or type manually):").pack(pady=10)
+      # GUI Setup
+      root = tk.Tk()
+      root.title("Group Discussion Simulation")
 
-    user_input_var = tk.StringVar()
-    user_input_entry = tk.Entry(root, textvariable=user_input_var, width=50)
-    user_input_entry.pack(pady=5)
+      tk.Label(root, text="Your Response (Record or type manually):").pack(pady=10)
 
-    tk.Button(root, text="Record", command=start_recording).pack(pady=5)
-    tk.Button(root, text="Submit Response", command=submit_response).pack(pady=5)
+      user_input_var = tk.StringVar()
+      user_input_entry = tk.Entry(root, textvariable=user_input_var, width=50)
+      user_input_entry.pack(pady=5)
 
-    tk.Label(root, text="Discussion Log:").pack(pady=10)
+      record_button = tk.Button(root, text="Start Recording", command=start_recording)
+      record_button.pack(pady=5)
+    
+      stop_button = tk.Button(root, text="Stop Recording", command=stop_recording)
+      stop_button.pack(pady=5)
+    
+      submit_button = tk.Button(root, text="Submit Response", command=submit_response)
+      submit_button.pack(pady=5)
 
-    discussion_log = tk.Text(root, height=20, width=80)
-    discussion_log.pack(pady=5)
+      tk.Label(root, text="Discussion Log:").pack(pady=10)
 
-    def update_log():
-        discussion_log.delete(1.0, tk.END)
-        discussion_log.insert(tk.END, msgs)
-        root.after(1000, update_log)
+      discussion_log = tk.Text(root, height=20, width=80)
+      discussion_log.pack(pady=5)
 
-    update_log()
-    root.mainloop()
+      def update_log():
+          discussion_log.delete(1.0, tk.END)
+          discussion_log.insert(tk.END, msgs)
+          root.after(1000, update_log)
 
+      update_log()
+      root.mainloop()
 if __name__ == "__main__":
-    gui_app()
+      gui_app()
